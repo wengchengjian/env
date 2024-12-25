@@ -8,20 +8,29 @@ use std::process::Command;
 pub const DEFAULT_JDK_VERSION: &str = "17.0.12";
 
 
-pub fn set_persistent_path(new_path: &str) -> io::Result<()> {
+pub fn set_persistent_path(var: Option<&str>, new_path: &str) -> io::Result<()> {
     if cfg!(target_os = "windows") {
-        let path = format!("%Path%;{new_path}");
+        let path = env::var("Path").unwrap();
+        let path = match var {
+            Some(v) => format!("%{v}%/{new_path};{path}"),
+            None => format!("{new_path};{path}")
+        };
         Command::new("setx")
             .args(&["Path", &path])
             .output()?;
     } else {
-        set_persistent_path_unix(new_path, false)?
+        set_persistent_path_unix(var, new_path, false)?
     }
    
     Ok(())
 }
 
-pub fn set_persistent_path_unix(new_path: &str, system_level: bool) -> io::Result<()> {
+pub fn set_persistent_path_unix(var: Option<&str>, new_path: &str, system_level: bool) -> io::Result<()> {
+  
+    let new_path = match var {
+        Some(v) => format!("${}/{}", v, new_path),
+        None => new_path.to_string()
+    };
     let config_file = if system_level {
         PathBuf::from("/etc/environment")
     } else {
@@ -44,10 +53,10 @@ pub fn set_persistent_path_unix(new_path: &str, system_level: bool) -> io::Resul
     for line in lines {
         if line.contains("PATH=") {
             found = true;
-            let mut parts: Vec<&str> = line.split('=').collect();
+            let parts: Vec<&str> = line.split('=').collect();
             let mut paths: Vec<&str> = parts[1].split(':').collect();
-            if!paths.contains(&new_path) {
-                paths.push(new_path);
+            if!paths.contains(&new_path.as_str()) {
+                paths.push(&new_path);
                 let new_line = format!("export PATH={}\n", paths.join(":"));
                 updated_lines.push(new_line);
             } else {
@@ -128,4 +137,21 @@ pub fn set_persistent_env_unix(var_name: &str, var_value: &str, system_level: bo
     file.write_all(lines.join("\n").as_bytes())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use crate::path::{set_persistent_env, set_persistent_path};
+
+    #[test]
+    fn test_set_persistent_path() {
+        // println!("{}", env!("PATH"))
+        set_persistent_path(None, "E:\\project\\rust-project\\env").unwrap();
+    }
+    
+    #[test]
+    fn test_set_persistent_env() {
+        set_persistent_env("test", "hellod").unwrap();
+    }
 }
