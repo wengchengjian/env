@@ -1,11 +1,22 @@
-use std::{fs, io};
-use std::fs::{OpenOptions};
+use crate::{get_temp_dir, Result};
+use anyhow::anyhow;
+use indicatif::{ProgressBar, ProgressStyle};
+use reqwest::{header, Client};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use anyhow::anyhow;
-use pbr::{ProgressBar, Units};
-use reqwest::{header, Client};
-use crate::{get_temp_dir, Result};
+use std::{fs, io};
+
+pub fn create_pbr(size: usize) -> ProgressBar {
+    let pb = ProgressBar::new(size as u64);
+    
+    pb.set_style(ProgressStyle::default_bar()
+    .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+    .unwrap()
+    .progress_chars("#>-"));
+    
+    pb
+}
 
 pub async fn download_packages(url: &str) -> Result<String> {
     let url_last = url.split("/").last().unwrap();
@@ -18,7 +29,7 @@ pub async fn download_packages(url: &str) -> Result<String> {
 
     let filename = base_dir.join(url_last).to_str().unwrap().to_string();
     let path = Path::new(&filename);
-    println!("下载包 {} 到 {:?}", url, filename);
+    println!("下载包 {} 到 {}", url, filename);
 
     let client = Client::new();
     let total_size = {
@@ -30,29 +41,30 @@ pub async fn download_packages(url: &str) -> Result<String> {
                 .and_then(|ct_len| ct_len.parse().ok())
                 .unwrap_or(0)
         } else {
-            return Err(Box::from(anyhow!(
+            return Err(anyhow!(
                 "Couldn't download URL: {}. Error: {:?}",
                 url,
                 resp.status(),
-            )));
+            ));
         }
     };
     let mut request = client.get(url);
-    let mut pb = ProgressBar::new(total_size);
-    pb.format("╢▌▌░╟");
-    pb.set_units(Units::Bytes);
-
+    
+    let mut has_size = 0;
     if path.exists() {
-        let size = path.metadata()?.len().saturating_sub(1);
-        request = request.header(header::RANGE, format!("bytes={}-", size));
-        pb.add(size);
+        has_size = path.metadata()?.len().saturating_sub(1);
+        request = request.header(header::RANGE, format!("bytes={}-", has_size));
     }
+    let pb = create_pbr(total_size as usize - has_size as usize);
+
     let mut source = request.send().await?;
     let mut dest = OpenOptions::new().create(true).append(true).open(&path)?;
     while let Some(chunk) = source.chunk().await? {
         dest.write_all(&chunk)?;
-        pb.add(chunk.len() as u64);
+        pb.inc(chunk.len() as u64);
     }
+    pb.finish_with_message("Download complete");
+
     Ok(filename)
 }
 

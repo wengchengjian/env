@@ -57,11 +57,11 @@ pub fn get_java_version() -> Option<String> {
     Some(version.to_string())
 }
 
-pub fn is_downloaded(version: &str) -> bool {
-    let install_dir = PathBuf::from(&EnvConfig::load_deserialize().install_path);
-    let install_dir = install_dir.join("Java");
-    let jdk_dir = install_dir.join(format!("jdk-{}", version));
-    jdk_dir.exists()
+pub fn is_downloaded(name: &str, version: &str) -> bool {
+    let install_dir = PathBuf::from(&EnvConfig::load_deserialize().unwrap().install_path);
+    let install_dir = install_dir.join(name);
+    let download_dir = install_dir.join(format!("{}-{}",name, version));
+    download_dir.exists()
 }
 
 /// 检查Java环境

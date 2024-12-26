@@ -1,26 +1,27 @@
+use anyhow::Result;
 use std::fs::OpenOptions;
-use std::{env, io};
-use std::fmt::format;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::Command;
+use std::{env, io};
 
-pub const DEFAULT_JDK_VERSION: &str = "17.0.12";
-
-
+#[cfg(target_os = "windows")]
 pub fn set_persistent_path(var: Option<&str>, new_path: &str) -> io::Result<()> {
-    if cfg!(target_os = "windows") {
-        let path = env::var("Path").unwrap();
-        let path = match var {
-            Some(v) => format!("%{v}%/{new_path};{path}"),
-            None => format!("{new_path};{path}")
-        };
-        Command::new("setx")
-            .args(&["Path", &path])
-            .output()?;
-    } else {
-        set_persistent_path_unix(var, new_path, false)?
-    }
+    let path = env::var("Path").unwrap();
+    let path = match var {
+        Some(v) => format!("%{v}%/{new_path};{path}"),
+        None => format!("{new_path};{path}")
+    };
+    Command::new("setx")
+        .args(&["Path", &path])
+        .output()?;
+   
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn set_persistent_path(var: Option<&str>, new_path: &str) -> io::Result<()> {
+    set_persistent_path_unix(var, new_path, false)?;
    
     Ok(())
 }
@@ -46,8 +47,6 @@ pub fn set_persistent_path_unix(var: Option<&str>, new_path: &str, system_level:
             lines.push(line?);
         }
     }
-
-
     let mut found = false;
     let mut updated_lines = Vec::new();
     for line in lines {
@@ -83,20 +82,18 @@ pub fn set_persistent_path_unix(var: Option<&str>, new_path: &str, system_level:
 
 
 
-pub fn set_persistent_env(var_name: &str, var_value: &str) -> crate::Result<()> {
-    if cfg!(target_os = "windows") {
-        Command::new("setx")
+#[cfg(target_os = "windows")]
+pub fn set_persistent_env(var_name: &str, var_value: &str) -> Result<()> {
+    Command::new("setx")
             .args(&[var_name, var_value])
-            .output()
-            .map_err(|e| format!("Failed to execute setx command: {}", e))?;
-    } else {
-        set_persistent_env_unix(var_name, var_value, false)?;
-    }
+            .output()?;
+
     Ok(())
 
 }
 
-pub fn set_persistent_env_unix(var_name: &str, var_value: &str, system_level: bool) -> io::Result<()> {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn set_persistent_env(var_name: &str, var_value: &str, system_level: bool) -> io::Result<()> {
     let config_file = if system_level {
         PathBuf::from("/etc/environment")
     } else {
@@ -141,7 +138,6 @@ pub fn set_persistent_env_unix(var_name: &str, var_value: &str, system_level: bo
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use crate::path::{set_persistent_env, set_persistent_path};
 
     #[test]
