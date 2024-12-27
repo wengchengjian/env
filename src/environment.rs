@@ -39,7 +39,7 @@ pub fn handle_vars(val: &str, vars: &HashMap<String, String>) -> String {
 pub fn switch_version(env: &Environment, version: &str) -> Result<()> {
     let name = env.name.as_str();
 
-    let vars = get_vars(env, version);
+    let mut vars = get_vars(env, version);
 
     let environments = &env.environment;
     let exec = &env.executable;
@@ -50,6 +50,8 @@ pub fn switch_version(env: &Environment, version: &str) -> Result<()> {
         // 处理环境变量
         let value = handle_vars(value, &vars);
         set_persistent_env(&key, &value)?;
+        //添加程序正在添加的环境变量
+        vars.insert(key.to_string(), value);
     }
 
     println!("添加可执行Path...");
