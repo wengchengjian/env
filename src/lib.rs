@@ -11,23 +11,23 @@ use std::path::PathBuf;
 use std::{fs, usize};
 use zip::auto_unzip;
 
+pub mod check;
+pub mod download;
+pub mod env_config;
 pub mod environment;
 pub mod install;
-pub mod env_config;
-pub mod download;
-pub mod check;
-pub mod zip;
 pub mod path;
-
+pub mod zip;
 
 /// 自定义Result类型，用于统一错误处理
 
 /// 命令行参数结构体
 #[derive(Parser)]
-#[command(name = "env", version = "1.0.0", about="快速安装开发环境")]
-#[command(long_about= "快速安装常见开发环境, 比如Java, Python3, Rust等等,也能作为环境检测工具使用")]
+#[command(name = "env", version = "1.0.0", about = "快速安装开发环境")]
+#[command(
+    long_about = "快速安装常见开发环境, 比如Java, Python3, Rust等等,也能作为环境检测工具使用"
+)]
 pub struct EnvArgs {
-
     /// 子命令指定要安装的环境
     #[command(subcommand)]
     pub command: Option<EnvSubCommand>,
@@ -35,7 +35,6 @@ pub struct EnvArgs {
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum EnvSubCommand {
-    
     /// 全局配置
     Config {
         /// 安装目录
@@ -44,7 +43,7 @@ pub enum EnvSubCommand {
 
         /// 刷新配置
         #[arg(long)]
-        flush: bool
+        flush: bool,
     },
 
     Dev(DevEnvironmentArgs),
@@ -52,19 +51,17 @@ pub enum EnvSubCommand {
     /// 版本选择
     Choose {
         #[arg(value_enum)]
-        name: ChooseEnvironment
-    }
+        name: ChooseEnvironment,
+    },
 }
 
-
-#[derive(Args,Clone, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct DevEnvironmentArgs {
     // 安装所有支持的环境
     // #[arg(short, long)]
     // pub all: bool,
-
     #[arg(short, long)]
-    pub name: Option<String>
+    pub name: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord, ValueEnum)]
@@ -96,7 +93,6 @@ impl ChooseEnvironment {
     }
 }
 
-
 pub fn deduplicate<T: Eq + std::hash::Hash + Clone>(arr: &[T]) -> Vec<T> {
     let mut set = std::collections::HashSet::new();
     let mut result = Vec::new();
@@ -107,7 +103,6 @@ pub fn deduplicate<T: Eq + std::hash::Hash + Clone>(arr: &[T]) -> Vec<T> {
     }
     result
 }
-
 
 /// 获取用户主目录路径
 pub fn get_home_dir() -> String {
@@ -120,7 +115,7 @@ pub fn get_home_dir() -> String {
 
 /// 获取env程序主目录路径
 pub fn get_env_home_dir() -> PathBuf {
-    PathBuf::from( get_home_dir()).join(".dev_env")
+    PathBuf::from(get_home_dir()).join(".dev_env")
 }
 
 /// 获取系统临时目录路径

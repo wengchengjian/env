@@ -12,12 +12,11 @@ async fn main() -> Result<()> {
     if let Err(e) = handle_cmd(&args).await {
         println!("env error: {}", e);
     }
-    
+
     Ok(())
 }
 
 pub async fn handle_cmd(args: &EnvArgs) -> Result<()> {
-
     let mut env_config = EnvConfig::load_deserialize()?;
 
     if let Some(command) = &args.command {
@@ -27,7 +26,7 @@ pub async fn handle_cmd(args: &EnvArgs) -> Result<()> {
 
                 if let Some(name) = &args.name {
                     let env = env_config.get_enviroment(name);
-                    
+
                     if env.is_none() {
                         println!("不支持的环境: {}", name);
                         return Ok(());
@@ -40,15 +39,13 @@ pub async fn handle_cmd(args: &EnvArgs) -> Result<()> {
             }
             EnvSubCommand::Choose { name } => {
                 choose_version(name)?;
-            },
-            EnvSubCommand::Config { dir,flush} => {
-                
-                
+            }
+            EnvSubCommand::Config { dir, flush } => {
                 if let Some(dir) = dir {
                     env_config.install_path = dir.as_os_str().to_str().unwrap().to_string();
                     EnvConfig::save(&env_config)?;
                 }
-                
+
                 if *flush {
                     flush_env_config()?;
                 }
@@ -58,5 +55,4 @@ pub async fn handle_cmd(args: &EnvArgs) -> Result<()> {
         }
     }
     Ok(())
-
 }

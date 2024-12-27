@@ -61,6 +61,17 @@ env dev java -v 17.0.9
 env choose java
 ```
 
+### Update Repository
+
+```bash
+# Update the repository
+# 更新仓库配置
+python scripts/update_repository.py
+
+# 设置定时任务
+python scripts/update_repository.py --setup-cron
+```
+
 ## Configuration
 
 The tool stores its configuration in `$HOME/.env.config.json`. This includes:

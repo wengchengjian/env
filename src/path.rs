@@ -10,27 +10,28 @@ pub fn set_persistent_path(var: Option<&str>, new_path: &str) -> io::Result<()> 
     let path = env::var("Path").unwrap();
     let path = match var {
         Some(v) => format!("%{v}%/{new_path};{path}"),
-        None => format!("{new_path};{path}")
+        None => format!("{new_path};{path}"),
     };
-    Command::new("setx")
-        .args(&["Path", &path])
-        .output()?;
-   
+    Command::new("setx").args(&["Path", &path]).output()?;
+
     Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn set_persistent_path(var: Option<&str>, new_path: &str) -> io::Result<()> {
     set_persistent_path_unix(var, new_path, false)?;
-   
+
     Ok(())
 }
 
-pub fn set_persistent_path_unix(var: Option<&str>, new_path: &str, system_level: bool) -> io::Result<()> {
-  
+pub fn set_persistent_path_unix(
+    var: Option<&str>,
+    new_path: &str,
+    system_level: bool,
+) -> io::Result<()> {
     let new_path = match var {
         Some(v) => format!("${}/{}", v, new_path),
-        None => new_path.to_string()
+        None => new_path.to_string(),
     };
     let config_file = if system_level {
         PathBuf::from("/etc/environment")
@@ -54,7 +55,7 @@ pub fn set_persistent_path_unix(var: Option<&str>, new_path: &str, system_level:
             found = true;
             let parts: Vec<&str> = line.split('=').collect();
             let mut paths: Vec<&str> = parts[1].split(':').collect();
-            if!paths.contains(&new_path.as_str()) {
+            if !paths.contains(&new_path.as_str()) {
                 paths.push(&new_path);
                 let new_line = format!("export PATH={}\n", paths.join(":"));
                 updated_lines.push(new_line);
@@ -66,8 +67,7 @@ pub fn set_persistent_path_unix(var: Option<&str>, new_path: &str, system_level:
         }
     }
 
-
-    if!found {
+    if !found {
         updated_lines.push(format!("export PATH=$PATH:{}\n", new_path));
     }
 
@@ -80,16 +80,11 @@ pub fn set_persistent_path_unix(var: Option<&str>, new_path: &str, system_level:
     Ok(())
 }
 
-
-
 #[cfg(target_os = "windows")]
 pub fn set_persistent_env(var_name: &str, var_value: &str) -> Result<()> {
-    Command::new("setx")
-            .args(&[var_name, var_value])
-            .output()?;
+    Command::new("setx").args(&[var_name, var_value]).output()?;
 
     Ok(())
-
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -100,7 +95,6 @@ pub fn set_persistent_env(var_name: &str, var_value: &str, system_level: bool) -
         let home = env::var("HOME").unwrap();
         PathBuf::from(home + "/.bashrc")
     };
-
 
     let entry = format!("\nexport {}={}\n", var_name, var_value);
     let mut lines = Vec::new();
@@ -121,7 +115,7 @@ pub fn set_persistent_env(var_name: &str, var_value: &str, system_level: bool) -
         }
     }
     // 移除重复元素
-    indexs.iter().for_each(| i | {
+    indexs.iter().for_each(|i| {
         lines.remove(*i);
     });
     lines.push(entry);
@@ -130,7 +124,7 @@ pub fn set_persistent_env(var_name: &str, var_value: &str, system_level: bool) -
         .create(true)
         .truncate(true)
         .open(&config_file)?;
-    
+
     file.write_all(lines.join("\n").as_bytes())?;
 
     Ok(())
@@ -145,7 +139,7 @@ mod tests {
         // println!("{}", env!("PATH"))
         set_persistent_path(None, "E:\\project\\rust-project\\env").unwrap();
     }
-    
+
     #[test]
     fn test_set_persistent_env() {
         set_persistent_env("test", "hellod").unwrap();

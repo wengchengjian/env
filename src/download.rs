@@ -9,12 +9,12 @@ use std::{fs, io};
 
 pub fn create_pbr(size: usize) -> ProgressBar {
     let pb = ProgressBar::new(size as u64);
-    
+
     pb.set_style(ProgressStyle::default_bar()
     .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
     .unwrap()
     .progress_chars("#>-"));
-    
+
     pb
 }
 
@@ -49,7 +49,7 @@ pub async fn download_packages(url: &str) -> Result<String> {
         }
     };
     let mut request = client.get(url);
-    
+
     let mut has_size = 0;
     if path.exists() {
         has_size = path.metadata()?.len().saturating_sub(1);
@@ -85,15 +85,11 @@ pub fn copy_file_to_dir(source_file_path: &str, destination_dir_path: &str) -> i
 
     // 构建目标文件的完整路径
     let destination_file = PathBuf::from(destination_dir).join(source_file.file_name().unwrap());
-    
+
     let ret = destination_file.to_str().unwrap().to_string();
-    
-    fs::copy(source_file, &destination_file).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("复制文件失败: {}", e)
-        )
-    })?;
+
+    fs::copy(source_file, &destination_file)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("复制文件失败: {}", e)))?;
     // 删除临时文件
     fs::remove_file(source_file_path).unwrap();
     Ok(ret)

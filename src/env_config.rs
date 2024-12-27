@@ -1,3 +1,4 @@
+use crate::deduplicate;
 use crate::get_env_home_dir;
 use anyhow::Ok;
 use anyhow::Result;
@@ -5,8 +6,11 @@ use config::Config;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, fs::{self, File}, path::{Path, PathBuf}};
-
+use std::{
+    collections::HashMap,
+    fs::{self, File},
+    path::{Path, PathBuf},
+};
 
 const DEFAULT_ENV_CONFIG: &'static str = include_str!("../.env.config.default.json");
 
@@ -14,15 +18,19 @@ lazy_static! {
     pub static ref ENV_CONFIG: EnvConfig = EnvConfig::load_deserialize().expect("加载环境配置失败");
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EnvConfig {
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub install_path: String,
 
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub arch_mapping: HashMap<String, HashMap<String, String>>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub environments: Vec<Environment>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub installed: Option<Vec<InstalledEnvironment>>
+    pub installed: Option<Vec<InstalledEnvironment>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -39,22 +47,36 @@ pub struct InstalledEnvironment {
     pub installed_versions: Vec<String>,
 }
 
+impl InstalledEnvironment {
+    pub fn new(name: &str, version: &str, home_dir: &str) -> InstalledEnvironment {
+        InstalledEnvironment {
+            name: name.to_string(),
+            current_version: Some(version.to_string()),
+            home_dir: Some(home_dir.to_string()),
+            installed_versions: vec![version.to_string()],
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Environment {
     pub name: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<EnvironmentInteractArgs>,
     pub format: Value,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub executable: Vec<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub environment: HashMap<String, String>,
-    pub repository: String
+    pub repository: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EnvironmentInteractArgs {
     pub name: String,
     pub description: String,
-    
+
     #[serde(rename = "type")]
     pub type_: String,
     pub default: String,
@@ -63,15 +85,13 @@ pub struct EnvironmentInteractArgs {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct  EnvironmentSelectArgs {
+pub struct EnvironmentSelectArgs {
     pub name: String,
 
-    pub value: String
+    pub value: String,
 }
 
-
 impl EnvConfig {
-
     pub fn get_enviroment(&self, name: &str) -> Option<Environment> {
         self.environments
             .iter()
@@ -80,25 +100,26 @@ impl EnvConfig {
     }
 
     pub fn switch_version(name: &str, version: &str, install_dir: &PathBuf) -> Result<()> {
-
         let install_dir = install_dir.to_str().unwrap();
 
         let mut config = ENV_CONFIG.clone();
+        let new_installed = InstalledEnvironment::new(name, version, install_dir);
 
         if let Some(installed) = &mut config.installed {
-            let env = installed
+            if let Some(env) = installed
                 .iter_mut()
                 .find(|env| env.name.to_lowercase() == name.to_lowercase())
-                .unwrap();
-            env.current_version = Some(version.to_string());
-            env.home_dir = Some(install_dir.to_string());
+            {
+                env.current_version = Some(version.to_string());
+                env.home_dir = Some(install_dir.to_string());
+                // 去重
+                env.installed_versions.push(version.to_string());
+                env.installed_versions = deduplicate(&env.installed_versions);
+            } else {
+                installed.push(new_installed);
+            }
         } else {
-            config.installed = Some(vec![InstalledEnvironment {
-                name: name.to_string(),
-                current_version: Some(version.to_string()),
-                home_dir: Some(install_dir.to_string()),
-                installed_versions: vec![version.to_string()],
-            }]);
+            config.installed = Some(vec![new_installed]);
         }
 
         EnvConfig::save(&config)?;
@@ -135,7 +156,7 @@ impl EnvConfig {
         Ok(())
     }
 
-    pub fn init() -> Result<()>{
+    pub fn init() -> Result<()> {
         let home_config_path = get_home_config_path();
 
         if home_config_path.exists() {
@@ -152,10 +173,7 @@ impl EnvConfig {
         }
 
         // 写入配置
-        serde_json::to_writer_pretty(
-            File::create(home_config_path)?,
-            &default_env_config,
-        )?;
+        serde_json::to_writer_pretty(File::create(home_config_path)?, &default_env_config)?;
         Ok(())
     }
 
@@ -181,14 +199,13 @@ impl EnvConfig {
         let setting = setting.build()?;
         Ok(setting)
     }
-    /// 加载配置 
+    /// 加载配置
     pub fn load_deserialize() -> Result<EnvConfig> {
         let setting = EnvConfig::load()?;
 
         let setting = setting.try_deserialize::<EnvConfig>()?;
         Ok(setting)
     }
-
 }
 
 pub fn config_exist(filename: &str) -> bool {
@@ -196,13 +213,11 @@ pub fn config_exist(filename: &str) -> bool {
     path.exists()
 }
 
-
 pub fn get_home_config_path() -> PathBuf {
     PathBuf::from(get_env_home_dir()).join(".env.config.json")
 }
 
-pub fn flush_env_config()-> anyhow::Result<()>{
-
+pub fn flush_env_config() -> anyhow::Result<()> {
     // 初始化home配置文件
     let mut config: EnvConfig = serde_json::from_str(DEFAULT_ENV_CONFIG)?;
 
@@ -223,12 +238,15 @@ pub fn find_all_installed_version(env_config: &mut EnvConfig) -> anyhow::Result<
     //遍历该目录下的一级目录，获取所有的版本
     let dirs = fs::read_dir(install_dir).unwrap();
     for dir in dirs {
-
         let dir = dir.unwrap().path();
 
         let name = dir.file_name().unwrap().to_str().unwrap();
         // 检查这个环境在不在配置中
-        if !env_config.environments.iter().any(|env| env.name.to_lowercase() == name.to_lowercase()) {
+        if !env_config
+            .environments
+            .iter()
+            .any(|env| env.name.to_lowercase() == name.to_lowercase())
+        {
             continue;
         }
         let installed_version: InstalledEnvironment = find_version_from_dir(&dir)?;
@@ -240,7 +258,6 @@ pub fn find_all_installed_version(env_config: &mut EnvConfig) -> anyhow::Result<
 
     Ok(())
 }
-
 
 pub fn find_version_from_dir(dir: &PathBuf) -> Result<InstalledEnvironment> {
     let name = dir.file_name().unwrap().to_str().unwrap().to_lowercase();
