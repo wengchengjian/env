@@ -23,9 +23,6 @@ pub struct EnvConfig {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub install_path: String,
 
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub arch_mapping: HashMap<String, HashMap<String, String>>,
-
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub environments: Vec<Environment>,
 
@@ -62,9 +59,13 @@ impl InstalledEnvironment {
 pub struct Environment {
     pub name: String,
     pub description: String,
+    
+    #[serde(skip_serializing_if = "Option::is_none", default="get_default_support")]
+    pub support: Option<bool>,
+
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<EnvironmentInteractArgs>,
-    pub format: Value,
+
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub executable: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
@@ -72,16 +73,26 @@ pub struct Environment {
     pub repository: String,
 }
 
+
+fn get_default_support() -> Option<bool> {
+    Some(true)
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EnvironmentInteractArgs {
     pub name: String,
+
     pub description: String,
 
     #[serde(rename = "type")]
     pub type_: String,
+
     pub default: String,
+
     pub options: Vec<String>,
-    pub select_description: Vec<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select_description: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
+from gettext import find
 import json
 import logging
 import asyncio
-from socket import timeout
 import aiohttp
 import sys
 import re
@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from packaging.version import parse as parse_version, Version, InvalidVersion
-from tenacity import retry, stop_after_attempt, wait_exponential
 from crontab import CronTab
 from tqdm import tqdm
 
@@ -25,15 +24,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 def is_zip_file(file_path: str) -> bool:
     return file_path.endswith('.zip') or file_path.endswith('.tar.gz')
 
 class VersionFetcher:
     def __init__(self):
-        self.session = None
         self.max_versions_per_platform = 5  # 每个平台最多保留的版本数
         self.max_links_to_process = 150  # 每个环境最多处理的链接数
+        self.timeout = aiohttp.ClientTimeout(total=5)
         # 定义平台标识符
         self.os_identifiers = {
             "windows": ["windows", "win"],
@@ -67,456 +65,309 @@ class VersionFetcher:
                 "file_types": ["gz", "pkg", "dmg"]
             }
         }
+        # 环境配置，统一版本获取策略
+        self.env_configs = {
+            "java": {
+                "type": "fixed_versions",
+                "versions": [21, 17, 11, 8],
+                "url_template": {
+                    "windows-x64": "https://corretto.aws/downloads/latest/amazon-corretto-{version}-x64-windows-jdk.zip",
+                    "linux-x64": "https://corretto.aws/downloads/latest/amazon-corretto-{version}-x64-linux-jdk.tar.gz",
+                    "linux-aarch64": "https://corretto.aws/downloads/latest/amazon-corretto-{version}-aarch64-linux-jdk.tar.gz",
+                    "macos-x64": "https://corretto.aws/downloads/latest/amazon-corretto-{version}-x64-macos-jdk.tar.gz",
+                    "macos-aarch64": "https://corretto.aws/downloads/latest/amazon-corretto-{version}-aarch64-macos-jdk.tar.gz"
+                }
+            },
+            "node": {
+                "type": "fixed_versions",
+                "versions": ["22.12.0", "20.18.1", "18.20.5"],
+                "url_template": {
+                    "windows-x64": "https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip",
+                    "linux-x64": "https://nodejs.org/dist/v{version}/node-v{version}-linux-x64.tar.xz",
+                    "linux-aarch64": "https://nodejs.org/dist/v{version}/node-v{version}-linux-arm64.tar.xz",
+                    "macos-x64": "https://nodejs.org/dist/v{version}/node-v{version}-darwin-x64.tar.gz",
+                    "macos-aarch64": "https://nodejs.org/dist/v{version}/node-v{version}-darwin-arm64.tar.gz"
+                }
+            },
+            "go": {
+                "type": "web_scrape",
+                "url": "https://golang.google.cn/dl/",
+                "version_pattern": r'go([\d.]+[A-Za-z0-9.-]*?)',
+                "download_base": "https://golang.google.cn"
+            },
+            "maven": {
+                "type": "fixed_versions",
+                "versions": ["3.9.9", "3.9.5", "3.8.8"],
+                "url_template": {
+                    "windows-x64": "https://dlcdn.apache.org/maven/maven-3/{version}/binaries/apache-maven-{version}-bin.zip",
+                    "linux-x64": "https://dlcdn.apache.org/maven/maven-3/{version}/binaries/apache-maven-{version}-bin.tar.gz",
+                    "linux-aarch64": "https://dlcdn.apache.org/maven/maven-3/{version}/binaries/apache-maven-{version}-bin.tar.gz",
+                    "macos-x64": "https://dlcdn.apache.org/maven/maven-3/{version}/binaries/apache-maven-{version}-bin.tar.gz",
+                    "macos-aarch64": "https://dlcdn.apache.org/maven/maven-3/{version}/binaries/apache-maven-{version}-bin.tar.gz"
+                },
+            },
+            "gradle": {
+                "type": "fixed_versions",
+                "versions": ["8.2.1", "7.5.1", "7.1.1"],
+                "url_template": {
+                    "windows-x64": "https://mirrors.aliyun.com/gradle/distributions/v{version}/gradle-{version}-bin.zip",
+                    "linux-x64": "https://mirrors.aliyun.com/gradle/distributions/v{version}/gradle-{version}-bin.zip",
+                    "linux-aarch64": "https://mirrors.aliyun.com/gradle/distributions/v{version}/gradle-{version}-bin.zip",
+                    "macos-x64": "https://mirrors.aliyun.com/gradle/distributions/v{version}/gradle-{version}-bin.zip",
+                    "macos-aarch64": "https://mirrors.aliyun.com/gradle/distributions/v{version}/gradle-{version}-bin.zip"
+                },
+            }
+        }
 
-    async def __aenter__(self):
-        timeout = aiohttp.ClientTimeout(total=30)
-        self.session = aiohttp.ClientSession(timeout=timeout)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def fetch_url(self, url: str) -> Optional[str]:
+    async def fetch_url(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
+        """获取URL内容"""
+        logger.debug(f"开始获取URL内容: {url}")
         try:
-            async with self.session.get(url) as response:
+            async with session.get(url) as response:
                 if response.status == 200:
-                    return await response.text()
-                logger.warning(f"Failed to fetch {url}, status: {response.status}")
-                return None
+                    content = await response.text()
+                    logger.debug(f"成功获取URL内容: {url}")
+                    return content
+            logger.warning(f"获取URL失败: {url}, 状态码: {response.status}")
+            return None
+        except asyncio.TimeoutError:
+            logger.error(f"获取URL超时: {url}")
+            return None
         except Exception as e:
-            logger.error(f"Error fetching {url}: {e}")
-            raise
+            logger.error(f"获取URL异常: {url}, 错误: {str(e)}")
+            return None
 
-    async def verify_download_url(self, url: str) -> bool:
+    async def verify_download_url(self, session: aiohttp.ClientSession, url: str) -> bool:
         """验证下载链接是否有效"""
+        logger.debug(f"开始验证下载链接: {url}")
         try:
-            async with self.session.head(url, allow_redirects=True, timeout=1) as response:
+            async with session.head(url, allow_redirects=True) as response:
                 is_valid = response.status == 200
-                logger.debug(f"URL verification {'succeeded' if is_valid else 'failed'} for {url} (status: {response.status})")
+                if is_valid:
+                    logger.debug(f"下载链接有效: {url}")
+                else:
+                    logger.warning(f"下载链接无效: {url}, 状态码: {response.status}")
                 return is_valid
+        except asyncio.TimeoutError:
+            logger.error(f"验证下载链接超时: {url}")
+            return False
         except Exception as e:
-            logger.debug(f"URL verification failed for {url}: {str(e)}")
+            logger.error(f"验证下载链接异常: {url}, 错误: {str(e)}")
+            return False
+
+    async def verify_version_url(self, session: aiohttp.ClientSession, url: str, install_type: str = None) -> bool:
+        """验证版本下载链接是否有效"""
+        logger.debug(f"验证下载链接: {url} (类型: {install_type})")
+        try:
+            async with session.head(url, allow_redirects=True) as response:
+                if response.status == 200:
+                    logger.debug(f"下载链接有效: {url}")
+                    return True
+                else:
+                    logger.warning(f"下载链接无效: {url}, 状态码: {response.status}")
+                    return False
+        except asyncio.TimeoutError:
+            logger.error(f"验证下载链接超时: {url}")
+            return False
+        except Exception as e:
+            logger.error(f"验证下载链接异常: {url}, 错误: {str(e)}")
             return False
 
     def is_valid_file(self, url: str, platform: str) -> bool:
         """检查文件类型是否对平台有效"""
         file_type = url.split('.')[-1].lower()
-        logger.debug(f"Checking file type {file_type} for platform {platform}")
         if platform not in self.platforms:
-            logger.debug(f"Invalid platform: {platform}")
+            logger.warning(f"未知平台: {platform}, URL: {url}")
             return False
-        valid_types = self.platforms[platform]['file_types']
-        is_valid = file_type in valid_types
-        logger.debug(f"File type {file_type} {'is' if is_valid else 'is not'} valid for platform {platform} (valid types: {valid_types})")
+        is_valid = file_type in self.platforms[platform]['file_types']
+        if not is_valid:
+            logger.debug(f"文件类型无效: {file_type}, 平台: {platform}, URL: {url}")
         return is_valid
 
-    def parse_version_parts(self, version: str) -> Tuple[List[int], str]:
-        """解析版本号，返回 (数字部分列表, 原始版本号)
-        对于复杂版本号（如 1.2.3-beta），返回数字部分 [1,2,3] 用于排序"""
-        try:
-            # 尝试使用 packaging.version 解析
-            parsed = parse_version(version)
-            if isinstance(parsed, Version):
-                # 提取主版本号数字部分
-                release_parts = list(parsed.release)
-                if release_parts:
-                    logger.debug(f"Parsed version {version} to {release_parts}")
-                    return release_parts, version
-        except InvalidVersion:
-            logger.debug(f"Failed to parse version {version} with packaging.version, trying fallback")
-            # 如果无法解析，尝试提取数字部分
-            parts = []
-            current_number = ''
-            for char in version:
-                if char.isdigit():
-                    current_number += char
-                elif char == '.' and current_number:
-                    parts.append(int(current_number))
-                    current_number = ''
-            if current_number:  # 添加最后一个数字
-                parts.append(int(current_number))
-            if parts:
-                logger.debug(f"Fallback: parsed version {version} to {parts}")
-                return parts, version
-        logger.debug(f"Failed to parse version {version}")
-        return [], version
+    async def _get_fixed_versions(self, session: aiohttp.ClientSession, env_name: str, config: dict) -> Dict[str, Dict[str, str]]:
+        """获取固定版本的下载链接"""
+        logger.info(f"开始获取{env_name}的固定版本")
+        versions = {platform: {} for platform in self.platforms}
+        tasks = []
 
-    def detect_platform(self, href: str) -> str:
-        """检测URL对应的平台
-        返回格式：{os}-{arch}，如 windows-x64, linux-aarch64"""
-        href = href.lower()
-        # 检查操作系统
-        detected_os = None
-        for os_name, os_ident in self.os_identifiers.items():
-            if any(ident in href for ident in os_ident):
-                detected_os = os_name
-                logger.debug(f"Detected OS {os_name} from {href}")
-                break
+        for platform in self.platforms:
+            if platform not in config["url_template"]:
+                logger.warning(f"{env_name}缺少平台{platform}的URL模板")
+                continue
 
-        if not detected_os:
-            logger.debug(f"No OS detected from {href}")
-            return None
+            for version in config["versions"]:
+                url = config["url_template"][platform].format(version=version)
+                logger.debug(f"添加版本检查任务: {env_name}, 平台: {platform}, 版本: {version}, URL: {url}")
+                tasks.append(self._verify_and_add_version(session, env_name, platform, str(version), url, versions))
 
-        # 检查架构
-        detected_arch = None
-        for arch_name, arch_ident in self.arch_identifiers.items():
-            if any(ident in href for ident in arch_ident):
-                detected_arch = arch_name
-                logger.debug(f"Detected architecture {arch_name} from {href}")
-                break
+        if not tasks:
+            logger.warning(f"{env_name}没有要检查的版本")
+            return versions
 
-        if not detected_arch:
-            logger.debug(f"No architecture detected from {href}, using default x64")
-            detected_arch = "x64"
+        logger.info(f"开始并行检查{env_name}的{len(tasks)}个版本")
+        await asyncio.gather(*tasks)
+        logger.info(f"完成{env_name}的固定版本检查")
+        return versions
 
-        platform = f"{detected_os}-{detected_arch}"
-        if platform in self.platforms:
-            logger.debug(f"Detected platform {platform} from {href}")
-            return platform
+    async def _verify_and_add_version(self, session: aiohttp.ClientSession, env_name: str, platform: str, version: str, url: str, versions: dict):
+        """验证并添加版本"""
+        logger.debug(f"开始验证版本: {env_name}, 平台: {platform}, 版本: {version}, URL: {url}")
+        if await self.verify_download_url(session, url):
+            versions[platform][version] = url
+            logger.info(f"找到有效版本: {env_name}, 平台: {platform}, 版本: {version}")
+        else:
+            logger.warning(f"版本验证失败: {env_name}, 平台: {platform}, 版本: {version}")
+
+    async def _get_web_versions(self, session: aiohttp.ClientSession, env_name: str, config: dict) -> Dict[str, Dict[str, str]]:
+        """从网页抓取版本信息"""
+        logger.info(f"开始从网页获取{env_name}的版本信息: {config['url']}")
+        versions = {platform: {} for platform in self.platforms}
         
-        logger.debug(f"Platform {platform} not in supported platforms")
-        return None
-
-    def extract_version(self, href: str, pattern: str) -> str:
-        """从URL中提取版本号"""
         try:
-            match = re.search(pattern, href)
-            if match:
-                version = match.group(1)
-                logger.debug(f"Extracted version {version} from {href}")
-                return version
-        except Exception as e:
-            logger.error(f"Failed to extract version from {href}: {e}")
-        return None
+            content = await self.fetch_url(session, config["url"])
+            if not content:
+                logger.error(f"获取{env_name}的网页内容失败")
+                return versions
 
-    def detect_platform_by_alias(self, href: str) -> str:
-        """通过别名检测平台"""
-        href = href.lower()
-        for platform, info in self.platforms.items():
-            if any(alias in href for alias in info['alias']):
-                logger.debug(f"Detected platform {platform} by alias from {href}")
-                return platform
-        logger.debug(f"No platform detected by alias from {href}")
-        return None
+            logger.debug(f"开始解析{env_name}的网页内容")
+            soup = BeautifulSoup(content, 'html.parser')
+            links = soup.find_all('a', href=True)
+            logger.debug(f"找到{len(links)}个链接")
+            
+            version_pattern = re.compile(config["version_pattern"])
+            logger.debug(f"使用版本匹配模式: {config['version_pattern']}")
+            
+            # 获取所有版本号
+            version_map = dict()
+            for link in links:
+                href = link['href']
+                match = version_pattern.search(href)
+                if match:
+                    version = match.group(1)
+                    version = version.strip('.')
+                    try:
+                        # 验证版本号格式
+                        parse_version(version)
+                        if version_map.get(version) is None:
+                            version_map[version] = []
+                        version_map[version].append(href)
+                        logger.debug(f"找到有效版本: {version}, URL: {href}")
+                    except InvalidVersion:
+                        logger.warning(f"无效的版本号格式: {version}, url:{href}")
+                        continue
+
+            if len(version_map.keys()) == 0:
+                logger.warning(f"{env_name}没有找到任何版本")
+                return versions
+
+            logger.info(f"共找到{len(version_map.keys())}个不同版本")
+            
+            # 获取每个版本的下载链接
+            valid_versions = 0
+            sorted_versions = sorted(version_map.items(), reverse=True, key=lambda v: parse_version(v[0]))
+            all_version_num = 0
+            for version, hrefs in sorted_versions:
+                # 超过了限制的最大版本数量
+                if all_version_num >= self.max_versions_per_platform:
+                    break
+
+                for href in hrefs:
+                    # 检查每个平台的版本都有了就跳过
+                    if all(versions[platform].get(version) is not None for platform in self.platforms):
+                        all_version_num += 1
+                        break
+                    try:
+                        logger.debug(f"处理版本 {version}")
+                            # 原有的处理逻辑
+                        platform_found = False
+                        for platform in self.platforms:
+                            if versions[platform].get(version) is not None:
+                                continue
+                            if any(ident in href.lower() for ident in self.platforms[platform]["alias"]):
+                                logger.debug(f"通过别名匹配到平台 {platform}")
+                                if "download_base" in config:
+                                    if "filename_template" in config:
+                                        url = f"{config['download_base'].format(version=version)}/{config['filename_template'].format(version=version, suffix='zip')}"
+                                    else:
+                                        url = config["download_base"] + href
+                                else:
+                                    url = href if href.startswith('http') else config["url"] + href
+                                
+                                logger.debug(f"生成下载链接: {url}")
+                                if self.is_valid_file(url, platform) and await self.verify_version_url(session, url):
+                                    versions[platform][version] = url
+                                    platform_found = True
+                                    logger.info(f"找到{env_name} {version}版本的{platform}平台下载包: {url}")
+                                else:
+                                    logger.debug(f"下载链接无效或验证失败: {url}")
+                            
+                            if platform_found:
+                                valid_versions += 1
+                                logger.debug(f"版本 {version} 找到了有效的平台下载链接")
+                            else:
+                                logger.debug(f"版本 {version} 未找到任何平台的下载链接")
+
+                    except Exception as e:
+                        logger.error(f"处理版本{version}时发生错误: {str(e)}", exc_info=True)
+                        continue
+
+            logger.info(f"{env_name}共找到{valid_versions}个有效版本")
+            return versions
+
+        except Exception as e:
+            logger.error(f"获取{env_name}版本信息时发生错误: {str(e)}", exc_info=True)
+            return versions
 
     def _log_versions(self, env_name: str, versions: Dict[str, Dict[str, str]]):
-        """记录环境版本信息的日志"""
-        total_versions = set()
-        for platform_versions in versions.values():
-            total_versions.update(platform_versions.keys())
-        
-        sorted_versions = sorted(total_versions, reverse=True)
-        display_versions = sorted_versions[:5]
-        remaining = len(sorted_versions) - 5 if len(sorted_versions) > 5 else 0
-        
-        version_str = ", ".join(display_versions)
-        if remaining > 0:
-            version_str += f" ... (and {remaining} more)"
-        
-        logger.info(f"[{env_name.upper()}] Found {len(total_versions)} versions at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"[{env_name.upper()}] Latest versions: {version_str}")
-        
-        # 记录每个平台的版本数量
+        """记录找到的版本信息"""
+        total_versions = 0
         for platform, platform_versions in versions.items():
-            logger.info(f"[{env_name.upper()}] {platform}: {len(platform_versions)} versions available")
-
-    async def get_java_versions(self) -> Dict[str, Dict[str, str]]:
-        versions_id = [21, 17, 11, 8]
-        versions = {platform: {} for platform in self.platforms}
-        logger.info(f"[JAVA] Processing versions: {', '.join(map(str, versions_id))}")
-
-        total_tasks = len(versions_id) * len(self.platforms)
-        with tqdm(total=total_tasks, desc="[JAVA] Fetching versions", unit="url") as pbar:
-            for version_id in versions_id:
-                for platform in self.platforms:
-                    try:
-                        # 构建版本号
-                        # if version_id > 8:
-                        #     version = f"{version_id}.0.2"
-                        # else:
-                        #     version = f"1.{version_id}.0"
-
-                        # 根据平台构建URL
-                        if platform.startswith("windows"):
-                            url = f"https://corretto.aws/downloads/latest/amazon-corretto-{version_id}-x64-windows-jdk.zip"
-                        elif platform.startswith("linux"):
-                            arch = "aarch64" if platform.endswith("aarch64") else "x64"
-                            url = f"https://corretto.aws/downloads/latest/amazon-corretto-{version_id}-{arch}-linux-jdk.tar.gz"
-                        elif platform.startswith("macos"):
-                            arch = "aarch64" if platform.endswith("aarch64") else "x64"
-                            url = f"https://corretto.aws/downloads/latest/amazon-corretto-{version_id}-{arch}-macos-jdk.tar.gz"
-                        else:
-                            pbar.update(1)
-                            continue
-
-                        # 验证下载链接
-                        if self.is_valid_file(url, platform) and await self.verify_download_url(url):
-                            versions[platform][str(version_id)] = url
-                            logger.debug(f"[JAVA] Added version {version_id} for {platform}: {url}")
-                        pbar.update(1)
-                    except Exception as e:
-                        logger.error(f"[JAVA] Error processing version {version_id} for {platform}: {str(e)}")
-                        pbar.update(1)
-                        continue
-
-        self._log_versions('java', versions)
-        return versions
-
-    async def get_node_versions(self) -> Dict[str, Dict[str, str]]:
-        """获取Node.js的版本信息
-        使用固定版本和URL模板，避免爬虫抓取
-        """
-        versions = {platform: {} for platform in self.platforms}
-        fixed_versions = ["22.12.0", "20.18.1", "18.20.5"]  # LTS versions
-        logger.info(f"[NODE] Processing fixed versions: {', '.join(fixed_versions)}")
-
-        total_tasks = len(fixed_versions) * len(self.platforms)
-        with tqdm(total=total_tasks, desc="[NODE] Fetching versions", unit="url") as pbar:
-            for version in fixed_versions:
-                for platform in self.platforms:
-                    try:
-                        # 根据平台构建URL
-                        if platform.startswith("windows"):
-                            url = f"https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"
-                        elif platform.startswith("linux"):
-                            arch = "x64" if platform.endswith("x64") else "arm64"
-                            url = f"https://nodejs.org/dist/v{version}/node-v{version}-linux-{arch}.tar.xz"
-                        elif platform.startswith("macos"):
-                            arch = "x64" if platform.endswith("x64") else "arm64"
-                            url = f"https://nodejs.org/dist/v{version}/node-v{version}-darwin-{arch}.tar.gz"
-                        else:
-                            pbar.update(1)
-                            continue
-
-                        # 验证下载链接
-                        if self.is_valid_file(url, platform) and await self.verify_download_url(url):
-                            versions[platform][version] = url
-                            logger.debug(f"[NODE] Added version {version} for {platform}: {url}")
-                        pbar.update(1)
-                    except Exception as e:
-                        logger.error(f"[NODE] Error processing version {version} for {platform}: {str(e)}")
-                        pbar.update(1)
-                        continue
-
-        self._log_versions('node', versions)
-        return versions
-
-    async def get_go_versions(self) -> Dict[str, Dict[str, str]]:
-        url = "https://golang.google.cn/dl/"
-        logger.info(f"[GO] Fetching versions from {url}")
-        html = await self.fetch_url(url)
-        if not html:
-            logger.error("[GO] Failed to fetch versions")
-            return {}
-
-        soup = BeautifulSoup(html, 'lxml')
-        versions = {platform: {} for platform in self.platforms}
-        
-        # 获取所有链接
-        all_links = soup.find_all('a', href=True)
-        logger.debug(f"[GO] Found {len(all_links)} total links")
-        
-        # 筛选符合条件的链接
-        filtered_links = []
-        for link in all_links:
-            href = link['href']
-            if not href.startswith('/dl/go'):
-                continue
-            version = self.extract_version(href, r'go([\d.]+[A-Za-z0-9.-]*?)').strip('.')
-            if not version:
-                continue
-            version_parts, original_version = self.parse_version_parts(version)
-            if version_parts:  # 只添加有效的版本号
-                filtered_links.append((version_parts, original_version, link))
-
-        # 按版本号排序，取最新的几个版本
-        filtered_links.sort(key=lambda x: x[0], reverse=True)
-        links_to_process = filtered_links[:self.max_links_to_process]
-        logger.info(f"[GO] Processing {len(links_to_process)} out of {len(filtered_links)} links")
-        logger.debug(f"[GO] Found {len(links_to_process)} links with valid versions")
-        if links_to_process:
-            logger.debug(f"[GO] Sample versions: {', '.join(str(v[1]) for v in links_to_process[:5])}")
-
-        with tqdm(total=len(links_to_process), desc="[GO] Fetching versions", unit="version") as pbar:
-            for version_parts, version, link in links_to_process:
-                # 检查是否所有平台都已达到版本上限
-                if all(len(versions[platform]) >= self.max_versions_per_platform for platform in self.platforms):
-                    logger.info("[GO] All platforms reached version limit")
-                    break
-
-                href = link['href']
-                # 首先通过URL检测平台
-                platform = self.detect_platform(href)
-                if not platform:
-                    platform = self.detect_platform_by_alias(href)
-                    if not platform:
-                        logger.debug(f"[GO] No platform detected for {href}")
-                        pbar.update(1)
-                        continue
-
-                # 检查该平台是否已达到版本上限
-                if len(versions[platform]) >= self.max_versions_per_platform:
-                    logger.debug(f"[GO] Platform {platform} reached version limit")
-                    pbar.update(1)
-                    continue
-
-                # 验证下载链接
-                url = f"https://golang.google.cn{href}"
-                if self.is_valid_file(url, platform) and await self.verify_download_url(url):
-                    versions[platform][version] = url
-                    logger.debug(f"[GO] Added version {version} for {platform}: {url}")
-                pbar.update(1)
-
-        self._log_versions('go', versions)
-        return versions
-
-    async def get_rust_versions(self) -> Dict[str, Dict[str, str]]:
-        versions = ["stable", "beta", "nightly"]
-        logger.info("[RUST] Getting standard versions: stable, beta, nightly")
-        versions_dict = {platform: {} for platform in self.platforms}
-
-        for version in versions:
-            # 检查是否所有平台都已达到版本上限
-            if all(len(versions_dict[platform]) >= self.max_versions_per_platform for platform in self.platforms):
-                logger.info("[RUST] All platforms reached version limit")
-                break
-
-            for platform in self.platforms:
-                # 检查该平台是否已达到版本上限
-                if len(versions_dict[platform]) >= self.max_versions_per_platform:
-                    continue
-
+            version_count = len(platform_versions)
+            total_versions += version_count
+            if version_count > 0:
+                logger.info(f"[{env_name}] 平台 {platform} 找到 {version_count} 个版本")
                 try:
-                    # 根据平台构建URL
-                    if platform.startswith("windows"):
-                        triple = "x86_64-pc-windows-msvc"
-                        suffix = ".exe"
-                    elif platform.startswith("linux"):
-                        arch = "aarch64" if platform.endswith("aarch64") else "x86_64"
-                        triple = f"{arch}-unknown-linux-gnu"
-                        suffix = ""
-                    elif platform.startswith("macos"):
-                        arch = "aarch64" if platform.endswith("aarch64") else "x86_64"
-                        triple = f"{arch}-apple-darwin"
-                        suffix = ""
+                    latest = max(platform_versions.keys(), key=lambda v: parse_version(v) if not v.startswith('v') else parse_version(v[1:]))
+                    logger.info(f"[{env_name}] 平台 {platform} 最新版本: {latest}")
+                except (ValueError, InvalidVersion) as e:
+                    logger.error(f"[{env_name}] 平台 {platform} 版本解析错误: {e}")
+            else:
+                logger.warning(f"[{env_name}] 平台 {platform} 未找到任何版本")
+        
+        logger.info(f"[{env_name}] 总共找到 {total_versions} 个版本")
 
-                    url = f"https://static.rust-lang.org/rustup/dist/{triple}/rustup-init{suffix}"
-                    # 验证下载链接
-                    if self.is_valid_file(url, platform) and await self.verify_download_url(url):
-                        versions_dict[platform][version] = url
-                        logger.debug(f"[RUST] Found version {version} for {platform}: {url}")
-                except Exception as e:
-                    logger.error(f"[RUST] Error processing version {version} for {platform}: {str(e)}")
-                    continue
-
-        self._log_versions('rust', versions_dict)
-        return versions_dict
-
-    async def get_maven_versions(self) -> Dict[str, Dict[str, str]]:
-        url = "https://maven.apache.org/download.cgi"
-        logger.info(f"[MAVEN] Fetching versions from {url}")
-        html = await self.fetch_url(url)
-        if not html:
-            logger.error("[MAVEN] Failed to fetch versions")
+    async def get_versions(self, env_name: str) -> Dict[str, Dict[str, str]]:
+        """获取指定环境的所有版本信息"""
+        logger.info(f"开始获取环境 {env_name} 的版本信息")
+        if env_name not in self.env_configs:
+            logger.error(f"未知环境: {env_name}")
             return {}
 
-        soup = BeautifulSoup(html, 'lxml')
-        versions = {platform: {} for platform in self.platforms}
-        
-        # 获取所有版本链接并排序
-        all_links = []
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if 'apache-maven-' not in href or 'bin.' not in href:
-                continue
-            version = self.extract_version(href, r'apache-maven-([\d.]+?[A-Za-z0-9.-]*?)')
-            if not version:
-                continue
-            version_parts, original_version = self.parse_version_parts(version)
-            if version_parts:  # 只添加有效的版本号
-                all_links.append((version_parts, original_version, link))
-
-        # 按版本号排序，取最新的几个版本
-        all_links.sort(key=lambda x: x[0], reverse=True)
-        links_to_process = all_links[:self.max_links_to_process]
-        logger.info(f"[MAVEN] Processing {len(links_to_process)} out of {len(all_links)} links")
-
-        with tqdm(total=len(links_to_process), desc="[MAVEN] Fetching versions", unit="version") as pbar:
-            for version_parts, version, link in links_to_process:
-                # 检查是否所有平台都已达到版本上限
-                if all(len(versions[platform]) >= self.max_versions_per_platform for platform in self.platforms):
-                    logger.info("[MAVEN] All platforms reached version limit")
-                    break
-
-                for platform in self.platforms:
-                    # 检查该平台是否已达到版本上限
-                    if len(versions[platform]) >= self.max_versions_per_platform:
-                        pbar.update(1)
-                        continue
-
-                    suffix = "zip" if "windows" in platform else "tar.gz"
-                    url = f"https://dlcdn.apache.org/maven/maven-3/{version}/binaries/apache-maven-{version}-bin.{suffix}"
-                    if self.is_valid_file(url, platform) and await self.verify_download_url(url):
-                        versions[platform][version] = url
-                        logger.debug(f"[MAVEN] Found version {version} for {platform}: {url}")
-                    pbar.update(1)
-
-        self._log_versions('maven', versions)
-        return versions
-
-    async def get_gradle_versions(self) -> Dict[str, Dict[str, str]]:
-        url = "https://gradle.org/releases/"
-        logger.info(f"[GRADLE] Fetching versions from {url}")
-        html = await self.fetch_url(url)
-        if not html:
-            logger.error("[GRADLE] Failed to fetch versions")
+        config = self.env_configs[env_name]
+        try:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                if config["type"] == "fixed_versions":
+                    versions = await self._get_fixed_versions(session, env_name, config)
+                elif config["type"] == "web_scrape":
+                    versions = await self._get_web_versions(session, env_name, config)
+                else:
+                    logger.error(f"未知的版本类型: {config['type']}")
+                    return {}
+                
+                self._log_versions(env_name, versions)
+                return versions
+        except Exception as e:
+            logger.error(f"获取 {env_name} 版本时发生错误: {str(e)}")
             return {}
 
-        soup = BeautifulSoup(html, 'lxml')
-        versions = {platform: {} for platform in self.platforms}
-        
-        # 获取所有版本链接并排序
-        all_links = []
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if 'gradle-' not in href or '-bin.zip' not in href:
-                continue
-            version = self.extract_version(href, r'gradle-([\d.]+?[A-Za-z0-9.-]*?)')
-            if not version:
-                continue
-            version_parts, original_version = self.parse_version_parts(version)
-            if version_parts:  # 只添加有效的版本号
-                all_links.append((version_parts, original_version, link))
+    async def __aenter__(self):
+        logger.debug("进入 VersionFetcher 上下文")
+        return self
 
-        # 按版本号排序，取最新的几个版本
-        all_links.sort(key=lambda x: x[0], reverse=True)
-        links_to_process = all_links[:self.max_links_to_process]
-        logger.info(f"[GRADLE] Processing {len(links_to_process)} out of {len(all_links)} links")
-
-        with tqdm(total=len(links_to_process), desc="[GRADLE] Fetching versions", unit="version") as pbar:
-            for version_parts, version, link in links_to_process:
-                # 检查是否所有平台都已达到版本上限
-                if all(len(versions[platform]) >= self.max_versions_per_platform for platform in self.platforms):
-                    logger.info("[GRADLE] All platforms reached version limit")
-                    break
-
-                url = f"https://services.gradle.org/distributions/gradle-{version}-bin.zip"
-                # Gradle 使用相同的zip文件格式对所有平台
-                for platform in self.platforms:
-                    # 检查该平台是否已达到版本上限
-                    if len(versions[platform]) >= self.max_versions_per_platform:
-                        pbar.update(1)
-                        continue
-
-                    if self.is_valid_file(url, platform) and await self.verify_download_url(url):
-                        versions[platform][version] = url
-                        logger.debug(f"[GRADLE] Found version {version} for {platform}: {url}")
-                    pbar.update(1)
-
-        self._log_versions('gradle', versions)
-        return versions
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        logger.debug("退出 VersionFetcher 上下文")
+        if exc_type:
+            logger.error(f"VersionFetcher 上下文发生错误: {exc_type.__name__}: {str(exc_val)}")
 
 class RepositoryUpdater:
     def __init__(self):
@@ -524,63 +375,65 @@ class RepositoryUpdater:
         self.config_file = Path(__file__).parent.parent / '.env.config.default.json'
 
     async def update(self):
+        """更新所有环境的版本信息"""
+        repository = {}
         async with VersionFetcher() as fetcher:
-            repository = {
-                "repositories": {
-                    "java": await fetcher.get_java_versions(),
-                    # "python": await fetcher.get_python_versions(),
-                    "go": await fetcher.get_go_versions(),
-                    "node": await fetcher.get_node_versions(),
-                    # "rust": await fetcher.get_rust_versions(),
-                    # "maven": await fetcher.get_maven_versions(),
-                    # "gradle": await fetcher.get_gradle_versions()
-                }
-            }
+            for env_name in fetcher.env_configs:
+                logger.info(f"Fetching versions for {env_name}...")
+                versions = await fetcher.get_versions(env_name)
+                if versions:
+                    repository[env_name] = versions
 
-            # 更新仓库配置
-            with open(self.repo_file, 'w', encoding='utf-8') as f:
-                json.dump(repository, f, indent=4, ensure_ascii=False)
-            
-            # 更新默认配置中的版本选项
-            self.update_default_config(repository)
-            
-            logger.info(f"Repository configuration updated successfully: {self.repo_file}")
+        # 保存到文件
+        with open(self.repo_file, 'w', encoding='utf-8') as f:
+            json.dump(repository, f, indent=2)
+        logger.info(f"Repository updated and saved to {self.repo_file}")
+
+        # 更新默认配置
+        self.update_default_config(repository)
 
     def update_default_config(self, repository: dict):
-        if not self.config_file.exists():
+        """更新默认配置文件"""
+        if not repository:
             return
 
-        with open(self.config_file, 'r', encoding='utf-8') as f:
-            config = json.load(f, strict=False)
+        config = {}
+        if self.config_file.exists():
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
 
-        for env in config.get('environments', []):
-            name = env['name']
-            if name in repository['repositories']:
-                # 获取该环境的所有版本
-                versions = set()
-                for platform_versions in repository['repositories'][name].values():
-                    versions.update(platform_versions.keys())
-                versions = sorted(versions, reverse=True)
+        # 更新配置
+        for env_name, versions in repository.items():
+            if not versions:
+                continue
+            enviroments= config['environments']
+            
+            find_env = [env for env in enviroments if env['name'] == env_name]
+            
+            if not find_env:
+                continue
 
-                # 更新环境的版本选项
-                for arg in env.get('args', []):
-                    if arg['name'] == 'version':
-                        arg['options'] = versions[:4]  # 保留最新的4个版本
-                        if versions:
-                            arg['default'] = versions[0]  # 设置最新版本为默认值
+            find_env = find_env[0]
+            
+            for arg in find_env['args']:
+                if arg['name'] == 'version':
+                    # 添加option version并排序
+                    vers = sorted(list(list(versions.values())[0].keys()), reverse=True, key=lambda v: parse_version(v) if not v.startswith('v') else parse_version(v[1:]))
 
+                    arg['options'] = vers
+                    arg['default'] = max(vers, key = lambda v: parse_version(v) if not v.startswith('v') else parse_version(v[1:]))
+        # 保存配置
         with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4, ensure_ascii=False)
+            json.dump(config, f, indent=2)
+        logger.info(f"Default config updated and saved to {self.config_file}")
 
 def setup_cron():
-    try:
-        cron = CronTab(user=True)
-        job = cron.new(command=f'{sys.executable} {Path(__file__).absolute()} --cron')
-        job.setall('0 0 * * *')  # 每天午夜执行
-        cron.write()
-        logger.info("Cron job setup successfully")
-    except Exception as e:
-        logger.error(f"Failed to setup cron job: {e}")
+    """设置定时任务"""
+    cron = CronTab(user=True)
+    job = cron.new(command=f'{sys.executable} {__file__}')
+    job.hour.on(0)  # 每天0点执行
+    cron.write()
+    logger.info("Cron job set up successfully")
 
 async def main():
     updater = RepositoryUpdater()

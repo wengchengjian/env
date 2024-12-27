@@ -60,8 +60,8 @@ pub struct DevEnvironmentArgs {
     // 安装所有支持的环境
     // #[arg(short, long)]
     // pub all: bool,
-    #[arg(short, long)]
-    pub name: Option<String>,
+    #[arg(value_enum)]
+    pub name: Option<ChooseEnvironment>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord, ValueEnum)]
@@ -75,6 +75,8 @@ pub enum ChooseEnvironment {
     PostgreSQL,
     MongoDB,
     Redis,
+    Maven,
+    Gradle,
 }
 
 impl ChooseEnvironment {
@@ -89,6 +91,8 @@ impl ChooseEnvironment {
             ChooseEnvironment::PostgreSQL => "PostgreSQL",
             ChooseEnvironment::MongoDB => "MongoDB",
             ChooseEnvironment::Redis => "Redis",
+            ChooseEnvironment::Maven => "Maven",
+            ChooseEnvironment::Gradle => "Gradle",
         }
     }
 }

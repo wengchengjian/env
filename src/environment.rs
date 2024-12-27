@@ -1,12 +1,10 @@
 use crate::{
-    env_config::{EnvConfig, Environment, ENV_CONFIG},
-    path::{set_persistent_env, set_persistent_path},
-    Result,
+    env_config::{EnvConfig, Environment, ENV_CONFIG}, install::is_supported_env, path::{set_persistent_env, set_persistent_path}, Result
 };
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Input, MultiSelect, Password, Select};
 use serde_json::Value;
-use std::{collections::HashMap, env, path::PathBuf};
+use std::{collections::HashMap, env, os::windows::process, path::PathBuf};
 
 pub fn get_install_dir(env: &Environment, version: &str) -> PathBuf {
     let name = env.name.as_str();
@@ -77,6 +75,11 @@ pub fn switch_version(env: &Environment, version: &str) -> Result<()> {
 }
 
 pub fn configure_environment(env: &Environment) -> Value {
+    if !is_supported_env(env) {
+        println!("不支持的环境: {}", env.name.red());
+        std::process::exit(1);
+    }
+
     let args = &env.args;
 
     let mut ret = HashMap::new();
@@ -85,7 +88,7 @@ pub fn configure_environment(env: &Environment) -> Value {
         let description = &arg.description;
         let options = &arg.options;
         let default_idx = options.iter().position(|v| v == &arg.default).unwrap_or(0);
-        let select_description = &arg.select_description;
+        let select_description = arg.select_description.clone().unwrap_or(vec![]);
         let mut i = 0;
 
         let items = options

@@ -25,6 +25,7 @@ pub async fn handle_cmd(args: &EnvArgs) -> Result<()> {
                 let install_dir = PathBuf::from(&env_config.install_path);
 
                 if let Some(name) = &args.name {
+                    let name = name.get_name();
                     let env = env_config.get_enviroment(name);
 
                     if env.is_none() {

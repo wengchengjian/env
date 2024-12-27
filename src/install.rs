@@ -1,4 +1,4 @@
-use std::{env::consts, fs, path::PathBuf};
+use std::{collections::HashMap, env::consts, fs, path::PathBuf};
 
 use crate::{
     check::is_downloaded,
@@ -15,11 +15,44 @@ use lazy_static::lazy_static;
 use serde_json::{json, Value};
 
 lazy_static! {
-    static ref REPOSITORY_MAP: Value = {
-        let content =
-            fs::read_to_string(".env.repository.json").unwrap_or_else(|_| String::from("{}"));
-        serde_json::from_str(&content).unwrap_or_else(|_| json!({"repositories": {}}))
+    static ref REPOSITORY_MAP: HashMap<String, Value> = {
+        let content = include_str!("../.env.repository.json");
+        serde_json::from_str(&content).unwrap()
     };
+
+    static ref PLATFORM: HashMap<String, HashMap<String, Vec<String>>> = serde_json::from_value(json!({
+        "windows-x64": {
+            "alias": ["win64", "x86_64-pc-windows", "amd64", "x64"],
+            "file_types": ["zip", "msi", "exe", "7z"]
+        },
+        "linux-x64": {
+            "alias": ["linux64", "x86_64-linux", "amd64"],
+            "file_types": ["tgz", "xz", "gz"]
+        },
+        "linux-aarch64": {
+            "alias": ["linux-arm64", "aarch64-linux"],
+            "file_types": ["tgz", "xz", "gz"]
+        },
+        "macos-x64": {
+            "alias": ["darwin64", "x86_64-darwin", "amd64"],
+            "file_types": ["gz", "pkg", "dmg"]
+        },
+        "macos-aarch64": {
+            "alias": ["darwin-arm64", "aarch64-darwin", "arm64"],
+            "file_types": ["gz", "pkg", "dmg"]
+        }
+    })).unwrap();
+
+    static ref ARCH_IDENTIFIER: HashMap<String, Vec<String>> = serde_json::from_value(json!({
+        "x64": ["x64", "amd64", "x86_64"],
+        "aarch64": ["aarch64", "arm64"]
+    })).unwrap();
+
+    static ref OS_IDENTIFIER: HashMap<String, Vec<String>> = serde_json::from_value(json!({
+        "windows": ["windows", "win"],
+        "linux": ["linux"],
+        "macos": ["macos", "darwin", "osx"]
+    })).unwrap();
 }
 
 pub async fn choose_and_install_from(env: &Environment, install_dir: &PathBuf) -> Result<()> {
@@ -82,11 +115,20 @@ fn extract_to_version_dir(
     Ok(())
 }
 
+pub fn is_supported_env(env: &Environment) -> bool {
+    env.support.unwrap_or(true)
+}
+
 pub async fn install_environment(
     env: &Environment,
     args: &Value,
     install_dir: &PathBuf,
 ) -> Result<()> {
+    if !is_supported_env(env) {
+        println!("不支持的环境: {}", env.name.red());
+        std::process::exit(1);
+    }
+
     let version = args.get("version").unwrap().as_str().unwrap();
     let name = env.name.as_str();
 
@@ -124,6 +166,7 @@ pub async fn choose_and_install(install_dir: &PathBuf) -> Result<()> {
     // 设置选项
     let items: Vec<String> = environments
         .iter()
+        .filter(|e| is_supported_env(e))
         .map(|e| format!("{} - {}", e.name, e.description))
         .collect();
 
@@ -210,6 +253,13 @@ pub fn choose_version(env: &ChooseEnvironment) -> Result<()> {
         .find(|e| e.name.to_lowercase() == name.to_lowercase());
 
     if let Some(env) = choose_env {
+        let is_supported = is_supported_env(env);
+        if !is_supported {
+            println!("不支持的环境: {}", env.name.red());
+            std::process::exit(1);
+        }
+
+
         let versions = ENV_CONFIG.get_install_versions(name);
         let current_version = ENV_CONFIG.get_current_version(name);
 
@@ -234,28 +284,33 @@ pub fn choose_version(env: &ChooseEnvironment) -> Result<()> {
 }
 
 pub fn choose_package(env: &Environment, version: &str) -> String {
-    let os = consts::OS;
-    let arch = consts::ARCH;
-
-    // 获取环境特定的架构名称
-    let mapped_arch = if let Some(arch_variants) = ENV_CONFIG.arch_mapping.get(arch) {
-        if let Some(env_arch) = arch_variants.get(&env.name) {
-            env_arch.as_str()
-        } else {
-            arch
+    let mut os = consts::OS.to_string();
+    let mut arch = consts::ARCH.to_string();
+    
+    // 统一化操作系统名称
+    for (os_name, alias) in OS_IDENTIFIER.iter() {
+        if alias.contains(&os) {
+            os = os_name.to_string();
+            break;
         }
-    } else {
-        arch
-    };
+    }
+
+    // 统一化架构名称
+    for (arch_name, alias) in ARCH_IDENTIFIER.iter() {
+        if alias.contains(&arch) {
+            arch = arch_name.to_string();
+            break;
+        }
+    }
+    
+    let platform = format!("{}-{}", &os, &arch);
+   
     // 首先尝试从映射配置中获取URL
-    let key = format!("{}-{}", os, mapped_arch);
-    if let Some(repos) = REPOSITORY_MAP.get("repositories") {
-        if let Some(env_repos) = repos.get(&env.name) {
-            if let Some(os_repos) = env_repos.get(&key) {
-                if let Some(url) = os_repos.get(version) {
-                    if let Some(url_str) = url.as_str() {
-                        return url_str.to_string();
-                    }
+    if let Some(repos) = REPOSITORY_MAP.get(&env.name) {
+        if let Some(version_map) = repos.get(&platform) {
+            if let Some(url) = version_map.get(version) {
+                if let Some(url_str) = url.as_str() {
+                    return url_str.to_string();
                 }
             }
         }
@@ -263,17 +318,13 @@ pub fn choose_package(env: &Environment, version: &str) -> String {
 
     // 如果没有找到映射，使用模板方式
     let url = &env.repository;
-    let mut format = &env.format;
-    if format.is_null() {
-        format = &DEFAULT_FORMAT[os];
-    } else if let Some(os_format) = format.get(os) {
-        format = os_format;
-    }
+    let mut format = &DEFAULT_FORMAT[&os];
+    
 
     let mut package_url = url
         .replace("%version%", version)
-        .replace("%arch%", mapped_arch)
-        .replace("%platform%", os)
+        .replace("%arch%", &arch)
+        .replace("%platform%", &os)
         .replace("%format%", format.as_str().unwrap_or(""));
 
     if os == "windows" && package_url.contains("rustup-init") {
