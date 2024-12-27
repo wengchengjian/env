@@ -1,20 +1,25 @@
 # env - Development Environment Manager
 
-A command-line tool for managing multiple development environments efficiently.
+A powerful command-line tool for managing multiple development environments efficiently. It helps developers easily install, manage, and switch between different versions of development tools and runtime environments.
 
 ## Features
 
 - Easy installation and version management for:
   - Java (JDK)
-  - Python (Coming soon)
-  - Node.js (Coming soon)
-  - Rust (Coming soon)
-  - Go (Coming soon)
-  - MySQL (Coming soon)
-  - Redis (Coming soon)
+  - Python
+  - Node.js
+  - Rust
+  - Go
+  - MySQL
+  - PostgreSQL
+  - MongoDB
+  - Redis
+  - Maven
+  - Gradle
 - Automatic environment variable configuration
 - Simple version switching between different installations
 - Global configuration management
+- Interactive installation process
 
 ## Installation
 
@@ -35,50 +40,64 @@ cargo build --release
 ### Basic Commands
 
 ```bash
+# Install a development environment (interactive mode)
+env dev
+
 # Install a specific environment
 env dev java
+env dev python
+env dev node
 
-# Install all supported environments
-env dev --all
-
-# Switch versions
+# Switch versions for an installed environment
 env choose java
+env choose python
+env choose node
 
 # Configure installation directory
 env config --dir "C:\Program Files\env"
 
 # Refresh environment configuration
 env config --flush
+
+# View current configuration
+env config
 ```
 
-### Java Environment Management
+### Supported Environments
 
+The tool currently supports the following environments:
+- Java (JDK)
+- Python
+- Node.js
+- Rust
+- Go
+- MySQL
+- PostgreSQL
+- MongoDB
+- Redis
+- Maven
+- Gradle
+
+Each environment can be installed and managed using the same command pattern:
 ```bash
-# Install specific Java version
-env dev java -v 17.0.9
-
-# Switch between installed Java versions
-env choose java
-```
-
-### Update Repository
-
-```bash
-# Update the repository
-# 更新仓库配置
-python scripts/update_repository.py
-
-# 设置定时任务
-python scripts/update_repository.py --setup-cron
+env dev [environment-name]
+env choose [environment-name]
 ```
 
 ## Configuration
 
-The tool stores its configuration in `$HOME/.env.config.json`. This includes:
-- Installation directory
-- Installed versions for each environment
-- Current active versions
-- Environment-specific settings
+The tool manages its configuration through two main files:
+
+1. `$HOME/.env.config.json`: User configuration file that includes:
+   - Installation directory path
+   - Installed versions for each environment
+   - Current active versions
+   - Environment-specific settings
+
+2. `.env.config.default.json`: Default configuration template that defines:
+   - Available environments
+   - Download repositories
+   - Environment-specific configurations
 
 ## Contributing
 
@@ -86,4 +105,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
